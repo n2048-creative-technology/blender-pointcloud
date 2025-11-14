@@ -7,6 +7,7 @@ from bpy.props import (
     BoolProperty,
     EnumProperty,
     FloatProperty,
+    FloatVectorProperty,
     IntProperty,
     PointerProperty,
     StringProperty,
@@ -61,6 +62,16 @@ def ensure_collection_linked(collection, scene):
     children = scene.collection.children
     if collection.name not in children.keys():
         children.link(collection)
+
+
+def apply_sensor_transform(obj, settings):
+    if obj is None or settings is None:
+        return
+    if hasattr(settings, "sensor_location"):
+        obj.location = settings.sensor_location
+    if hasattr(settings, "sensor_rotation"):
+        obj.rotation_mode = 'XYZ'
+        obj.rotation_euler = settings.sensor_rotation
 
 
 def ensure_point_display_group(point_size):
@@ -202,6 +213,7 @@ class RealSenseSession:
         obj = bpy.data.objects.new(mesh.name, mesh)
         collection.objects.link(obj)
         ensure_point_display_modifier(obj, self.settings.point_size)
+        apply_sensor_transform(obj, self.settings)
         return obj
 
     def _timer_callback(self):
@@ -248,6 +260,9 @@ class RealSenseSession:
             vertices = vertices[vertices[:, 2] <= max_depth]
         if not len(vertices):
             return
+        if self.settings.mirror_x:
+            vertices = vertices.copy()
+            vertices[:, 0] *= -1.0
         max_points = self.settings.max_points
         if max_points > 0 and len(vertices) > max_points:
             step = max(1, math.ceil(len(vertices) / max_points))
@@ -255,7 +270,7 @@ class RealSenseSession:
         verts_list = vertices.tolist()
         self.last_vertices = [tuple(v) for v in verts_list]
         self._ensure_live_object()
-        self._update_point_display()
+        self._update_live_object_state()
         mesh = self._mesh
         mesh.clear_geometry()
         mesh.from_pydata(self.last_vertices, [], [])
@@ -337,11 +352,14 @@ class RealSenseSession:
         self._mesh = mesh
         self._object = obj
         self._collection = collection
-        self._update_point_display()
+        self._update_live_object_state()
 
-    def _update_point_display(self):
+    def _update_live_object_state(self):
+        if not self._object:
+            return
         modifier = ensure_point_display_modifier(self._object, self.settings.point_size)
         self._point_modifier = modifier
+        apply_sensor_transform(self._object, self.settings)
 
 
 class RealSenseSettings(PropertyGroup):
@@ -357,6 +375,18 @@ class RealSenseSettings(PropertyGroup):
     min_depth: FloatProperty(name="Min Depth (m)", min=0.0, max=10.0, default=0.1)
     max_depth: FloatProperty(name="Max Depth (m)", min=0.0, max=20.0, default=5.0)
     point_size: FloatProperty(name="Point Size", min=0.0005, max=0.1, default=0.005, subtype='DISTANCE')
+    mirror_x: BoolProperty(name="Mirror X", default=False, description="Flip the point cloud across the X axis")
+    sensor_location: FloatVectorProperty(
+        name="Sensor Position",
+        subtype='TRANSLATION',
+        default=(0.0, 0.0, 0.0),
+    )
+    sensor_rotation: FloatVectorProperty(
+        name="Sensor Rotation",
+        subtype='EULER',
+        unit='ROTATION',
+        default=(0.0, 0.0, 0.0),
+    )
 
     depth_auto_exposure: BoolProperty(name="Depth Auto Exposure", default=True)
     depth_exposure: FloatProperty(name="Depth Exposure", min=50.0, max=33000.0, default=8500.0)
@@ -488,6 +518,9 @@ class VIEW3D_PT_realsense_stream(Panel):
         col.prop(settings, "min_depth")
         col.prop(settings, "max_depth")
         col.prop(settings, "point_size")
+        col.prop(settings, "mirror_x")
+        col.prop(settings, "sensor_location")
+        col.prop(settings, "sensor_rotation")
 
         layout.separator()
         col = layout.column(align=True)
